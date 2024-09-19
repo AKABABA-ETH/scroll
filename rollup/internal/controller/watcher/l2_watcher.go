@@ -8,7 +8,6 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/scroll-tech/da-codec/encoding"
 	"github.com/scroll-tech/da-codec/encoding/codecv0"
-	"github.com/scroll-tech/go-ethereum/accounts/abi"
 	"github.com/scroll-tech/go-ethereum/common"
 	"github.com/scroll-tech/go-ethereum/common/hexutil"
 	gethTypes "github.com/scroll-tech/go-ethereum/core/types"
@@ -18,7 +17,6 @@ import (
 	"github.com/scroll-tech/go-ethereum/rpc"
 	"gorm.io/gorm"
 
-	bridgeAbi "scroll-tech/rollup/abi"
 	"scroll-tech/rollup/internal/orm"
 )
 
@@ -34,7 +32,6 @@ type L2WatcherClient struct {
 	confirmations rpc.BlockNumber
 
 	messageQueueAddress  common.Address
-	messageQueueABI      *abi.ABI
 	withdrawTrieRootSlot common.Hash
 
 	metrics *l2WatcherMetrics
@@ -51,7 +48,6 @@ func NewL2WatcherClient(ctx context.Context, client *ethclient.Client, confirmat
 		confirmations: confirmations,
 
 		messageQueueAddress:  messageQueueAddress,
-		messageQueueABI:      bridgeAbi.L2MessageQueueABI,
 		withdrawTrieRootSlot: withdrawTrieRootSlot,
 
 		metrics: initL2WatcherMetrics(reg),
@@ -131,6 +127,7 @@ func (w *L2WatcherClient) getAndStoreBlocks(ctx context.Context, from, to uint64
 			return fmt.Errorf("failed to GetBlockByNumberOrHash: %v. number: %v", err, number)
 		}
 		if block.RowConsumption == nil {
+			w.metrics.fetchNilRowConsumptionBlockTotal.Inc()
 			return fmt.Errorf("fetched block does not contain RowConsumption. number: %v", number)
 		}
 
