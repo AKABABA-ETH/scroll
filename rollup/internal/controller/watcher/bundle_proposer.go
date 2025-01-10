@@ -2,6 +2,8 @@ package watcher
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -10,8 +12,6 @@ import (
 	"github.com/scroll-tech/go-ethereum/log"
 	"github.com/scroll-tech/go-ethereum/params"
 	"gorm.io/gorm"
-
-	"scroll-tech/common/forks"
 
 	"scroll-tech/rollup/internal/config"
 	"scroll-tech/rollup/internal/orm"
@@ -29,7 +29,8 @@ type BundleProposer struct {
 	maxBatchNumPerBundle uint64
 	bundleTimeoutSec     uint64
 
-	chainCfg *params.ChainConfig
+	minCodecVersion encoding.CodecVersion
+	chainCfg        *params.ChainConfig
 
 	bundleProposerCircleTotal           prometheus.Counter
 	proposeBundleFailureTotal           prometheus.Counter
@@ -41,7 +42,7 @@ type BundleProposer struct {
 }
 
 // NewBundleProposer creates a new BundleProposer instance.
-func NewBundleProposer(ctx context.Context, cfg *config.BundleProposerConfig, chainCfg *params.ChainConfig, db *gorm.DB, reg prometheus.Registerer) *BundleProposer {
+func NewBundleProposer(ctx context.Context, cfg *config.BundleProposerConfig, minCodecVersion encoding.CodecVersion, chainCfg *params.ChainConfig, db *gorm.DB, reg prometheus.Registerer) *BundleProposer {
 	log.Info("new bundle proposer", "bundleBatchesNum", cfg.MaxBatchNumPerBundle, "bundleTimeoutSec", cfg.BundleTimeoutSec)
 
 	p := &BundleProposer{
@@ -52,6 +53,7 @@ func NewBundleProposer(ctx context.Context, cfg *config.BundleProposerConfig, ch
 		bundleOrm:            orm.NewBundle(db),
 		maxBatchNumPerBundle: cfg.MaxBatchNumPerBundle,
 		bundleTimeoutSec:     cfg.BundleTimeoutSec,
+		minCodecVersion:      minCodecVersion,
 		chainCfg:             chainCfg,
 
 		bundleProposerCircleTotal: promauto.With(reg).NewCounter(prometheus.CounterOpts{
@@ -131,7 +133,7 @@ func (p *BundleProposer) proposeBundle() error {
 
 	// select at most maxBlocksThisChunk blocks
 	maxBatchesThisBundle := p.maxBatchNumPerBundle
-	batches, err := p.batchOrm.GetBatchesGEIndexGECodecVersion(p.ctx, firstUnbundledBatchIndex, encoding.CodecV3, int(maxBatchesThisBundle))
+	batches, err := p.batchOrm.GetBatchesGEIndexGECodecVersion(p.ctx, firstUnbundledBatchIndex, p.minCodecVersion, int(maxBatchesThisBundle))
 	if err != nil {
 		return err
 	}
@@ -146,14 +148,25 @@ func (p *BundleProposer) proposeBundle() error {
 	if err != nil {
 		return err
 	}
-	hardforkName := forks.GetHardforkName(p.chainCfg, firstChunk.StartBlockNumber, firstChunk.StartBlockTime)
+
+	if firstChunk == nil {
+		log.Error("first chunk not found", "start chunk index", batches[0].StartChunkIndex, "start batch index", batches[0].Index, "firstUnbundledBatchIndex", firstUnbundledBatchIndex)
+		return errors.New("first chunk not found in proposeBundle")
+	}
+
+	hardforkName := encoding.GetHardforkName(p.chainCfg, firstChunk.StartBlockNumber, firstChunk.StartBlockTime)
 	codecVersion := encoding.CodecVersion(batches[0].CodecVersion)
+
+	if codecVersion < p.minCodecVersion {
+		return fmt.Errorf("unsupported codec version: %v, expected at least %v", codecVersion, p.minCodecVersion)
+	}
+
 	for i := 1; i < len(batches); i++ {
 		chunk, err := p.chunkOrm.GetChunkByIndex(p.ctx, batches[i].StartChunkIndex)
 		if err != nil {
 			return err
 		}
-		currentHardfork := forks.GetHardforkName(p.chainCfg, chunk.StartBlockNumber, chunk.StartBlockTime)
+		currentHardfork := encoding.GetHardforkName(p.chainCfg, chunk.StartBlockNumber, chunk.StartBlockTime)
 		if currentHardfork != hardforkName {
 			batches = batches[:i]
 			maxBatchesThisBundle = uint64(i) // update maxBlocksThisChunk to trigger chunking, because these blocks are the last blocks before the hardfork

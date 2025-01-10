@@ -11,8 +11,8 @@ import (
 	"gorm.io/gorm"
 
 	"scroll-tech/common/types"
+	"scroll-tech/common/utils"
 
-	"scroll-tech/rollup/internal/utils"
 	rutils "scroll-tech/rollup/internal/utils"
 )
 
@@ -178,7 +178,7 @@ func (o *Chunk) GetChunksByBatchHash(ctx context.Context, batchHash string) ([]*
 }
 
 // InsertChunk inserts a new chunk into the database.
-func (o *Chunk) InsertChunk(ctx context.Context, chunk *encoding.Chunk, codecConfig rutils.CodecConfig, metrics utils.ChunkMetrics, dbTX ...*gorm.DB) (*Chunk, error) {
+func (o *Chunk) InsertChunk(ctx context.Context, chunk *encoding.Chunk, codecVersion encoding.CodecVersion, metrics rutils.ChunkMetrics, dbTX ...*gorm.DB) (*Chunk, error) {
 	if chunk == nil || len(chunk.Blocks) == 0 {
 		return nil, errors.New("invalid args")
 	}
@@ -203,9 +203,15 @@ func (o *Chunk) InsertChunk(ctx context.Context, chunk *encoding.Chunk, codecCon
 		parentChunkStateRoot = parentChunk.StateRoot
 	}
 
-	chunkHash, err := utils.GetChunkHash(chunk, totalL1MessagePoppedBefore, codecConfig.Version)
+	chunkHash, err := rutils.GetChunkHash(chunk, totalL1MessagePoppedBefore, codecVersion)
 	if err != nil {
 		log.Error("failed to get chunk hash", "err", err)
+		return nil, fmt.Errorf("Chunk.InsertChunk error: %w", err)
+	}
+
+	enableCompress, err := encoding.GetChunkEnableCompression(codecVersion, chunk)
+	if err != nil {
+		log.Error("failed to get chunk enable compression", "version", codecVersion, "err", err)
 		return nil, fmt.Errorf("Chunk.InsertChunk error: %w", err)
 	}
 
@@ -217,7 +223,7 @@ func (o *Chunk) InsertChunk(ctx context.Context, chunk *encoding.Chunk, codecCon
 		StartBlockHash:               chunk.Blocks[0].Header.Hash().Hex(),
 		EndBlockNumber:               chunk.Blocks[numBlocks-1].Header.Number.Uint64(),
 		EndBlockHash:                 chunk.Blocks[numBlocks-1].Header.Hash().Hex(),
-		TotalL2TxGas:                 chunk.L2GasUsed(),
+		TotalL2TxGas:                 chunk.TotalGasUsed(),
 		TotalL2TxNum:                 chunk.NumL2Transactions(),
 		TotalL1CommitCalldataSize:    metrics.L1CommitCalldataSize,
 		TotalL1CommitGas:             metrics.L1CommitGas,
@@ -228,8 +234,8 @@ func (o *Chunk) InsertChunk(ctx context.Context, chunk *encoding.Chunk, codecCon
 		StateRoot:                    chunk.Blocks[numBlocks-1].Header.Root.Hex(),
 		ParentChunkStateRoot:         parentChunkStateRoot,
 		WithdrawRoot:                 chunk.Blocks[numBlocks-1].WithdrawRoot.Hex(),
-		CodecVersion:                 int16(codecConfig.Version),
-		EnableCompress:               codecConfig.EnableCompress,
+		CodecVersion:                 int16(codecVersion),
+		EnableCompress:               enableCompress,
 		ProvingStatus:                int16(types.ProvingTaskUnassigned),
 		CrcMax:                       metrics.CrcMax,
 		BlobSize:                     metrics.L1CommitBlobSize,
@@ -256,11 +262,11 @@ func (o *Chunk) UpdateProvingStatus(ctx context.Context, hash string, status typ
 
 	switch status {
 	case types.ProvingTaskAssigned:
-		updateFields["prover_assigned_at"] = time.Now()
+		updateFields["prover_assigned_at"] = utils.NowUTC()
 	case types.ProvingTaskUnassigned:
 		updateFields["prover_assigned_at"] = nil
 	case types.ProvingTaskVerified:
-		updateFields["proved_at"] = time.Now()
+		updateFields["proved_at"] = utils.NowUTC()
 	}
 
 	db := o.db
@@ -284,11 +290,11 @@ func (o *Chunk) UpdateProvingStatusByBatchHash(ctx context.Context, batchHash st
 
 	switch status {
 	case types.ProvingTaskAssigned:
-		updateFields["prover_assigned_at"] = time.Now()
+		updateFields["prover_assigned_at"] = utils.NowUTC()
 	case types.ProvingTaskUnassigned:
 		updateFields["prover_assigned_at"] = nil
 	case types.ProvingTaskVerified:
-		updateFields["proved_at"] = time.Now()
+		updateFields["proved_at"] = utils.NowUTC()
 	}
 
 	db := o.db

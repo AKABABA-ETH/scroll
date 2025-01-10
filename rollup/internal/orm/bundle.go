@@ -67,7 +67,7 @@ func (o *Bundle) getLatestBundle(ctx context.Context) (*Bundle, error) {
 
 	var latestBundle Bundle
 	if err := db.First(&latestBundle).Error; err != nil {
-		if err == gorm.ErrRecordNotFound {
+		if errors.Is(err, gorm.ErrRecordNotFound) {
 			return nil, nil
 		}
 		return nil, fmt.Errorf("getLatestBundle error: %w", err)
@@ -189,15 +189,19 @@ func (o *Bundle) InsertBundle(ctx context.Context, batches []*Batch, codecVersio
 }
 
 // UpdateFinalizeTxHashAndRollupStatus updates the finalize transaction hash and rollup status for a bundle.
-func (o *Bundle) UpdateFinalizeTxHashAndRollupStatus(ctx context.Context, hash string, finalizeTxHash string, status types.RollupStatus) error {
+func (o *Bundle) UpdateFinalizeTxHashAndRollupStatus(ctx context.Context, hash string, finalizeTxHash string, status types.RollupStatus, dbTX ...*gorm.DB) error {
 	updateFields := make(map[string]interface{})
 	updateFields["finalize_tx_hash"] = finalizeTxHash
 	updateFields["rollup_status"] = int(status)
 	if status == types.RollupFinalized {
-		updateFields["finalized_at"] = time.Now()
+		updateFields["finalized_at"] = utils.NowUTC()
 	}
 
-	db := o.db.WithContext(ctx)
+	db := o.db
+	if len(dbTX) > 0 && dbTX[0] != nil {
+		db = dbTX[0]
+	}
+	db = db.WithContext(ctx)
 	db = db.Model(&Bundle{})
 	db = db.Where("hash", hash)
 
@@ -214,7 +218,7 @@ func (o *Bundle) UpdateProvingStatus(ctx context.Context, hash string, status ty
 
 	switch status {
 	case types.ProvingTaskVerified:
-		updateFields["proved_at"] = time.Now()
+		updateFields["proved_at"] = utils.NowUTC()
 	}
 
 	db := o.db
@@ -237,7 +241,7 @@ func (o *Bundle) UpdateRollupStatus(ctx context.Context, hash string, status typ
 	updateFields := make(map[string]interface{})
 	updateFields["rollup_status"] = int(status)
 	if status == types.RollupFinalized {
-		updateFields["finalized_at"] = time.Now()
+		updateFields["finalized_at"] = utils.NowUTC()
 	}
 
 	db := o.db.WithContext(ctx)
